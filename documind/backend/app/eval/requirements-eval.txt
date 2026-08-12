@@ -1,0 +1,13 @@
+# Install into a SEPARATE venv from backend/pyproject.toml — do not install
+# these alongside the main app's dependencies. See docs/EVAL.md.
+#
+# Judge model: Groq (llama-3.3-70b-versatile) + Gemini embeddings (for
+# answer_relevancy only). Requires GROQ_API_KEY and GEMINI_API_KEY set in
+# this venv's environment when running score.py.
+ragas==0.2.15
+langchain==0.3.14
+langchain-core>=0.3.43,<0.4
+langchain-openai==0.2.14
+langchain-community==0.3.14
+langchain-groq==0.2.5
+datasets
