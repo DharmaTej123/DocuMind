@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="640" viewBox="0 0 860 640" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#475569"/>
+    </marker>
+    <marker id="ar" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#d97706"/>
+    </marker>
+  </defs>
+
+  <rect width="860" height="640" fill="#f8fafc"/>
+  <text x="430" y="40" font-size="22" font-weight="700" fill="#0f172a" text-anchor="middle">DocuMind — LangGraph Agent</text>
+  <text x="430" y="64" font-size="13" fill="#64748b" text-anchor="middle">StateGraph · nodes return partial state · trace accumulated per node</text>
+
+  <!-- user question -->
+  <rect x="330" y="92" width="200" height="52" rx="10" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="430" y="117" font-size="13" font-weight="600" fill="#334155" text-anchor="middle">User question</text>
+  <text x="430" y="134" font-size="10.5" fill="#64748b" text-anchor="middle">JWT-scoped to this user</text>
+
+  <!-- interpret -->
+  <rect x="330" y="176" width="200" height="64" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="430" y="201" font-size="14" font-weight="700" fill="#15803d" text-anchor="middle">interpret_query</text>
+  <text x="430" y="221" font-size="10.5" fill="#166534" text-anchor="middle">LLM rewrites raw question → keyword query</text>
+
+  <!-- retrieve -->
+  <rect x="330" y="272" width="200" height="64" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="430" y="297" font-size="14" font-weight="700" fill="#15803d" text-anchor="middle">retrieve</text>
+  <text x="430" y="317" font-size="10.5" fill="#166534" text-anchor="middle">pgvector cosine kNN · user-scoped · top_k 8→14→20</text>
+
+  <!-- rerank -->
+  <rect x="330" y="368" width="200" height="64" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="430" y="393" font-size="14" font-weight="700" fill="#15803d" text-anchor="middle">rerank</text>
+  <text x="430" y="413" font-size="10.5" fill="#166534" text-anchor="middle">Cohere rerank-english-v3.0 · keep top 3</text>
+
+  <!-- route diamond -->
+  <polygon points="430,460 540,510 430,560 320,510" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+  <text x="430" y="505" font-size="12" font-weight="700" fill="#b45309" text-anchor="middle">route_after_rerank</text>
+  <text x="430" y="522" font-size="10" fill="#92400e" text-anchor="middle">top score &lt; 0.5 &amp; attempts &lt; 2 ?</text>
+
+  <!-- synthesize -->
+  <rect x="590" y="478" width="230" height="64" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="705" y="503" font-size="14" font-weight="700" fill="#15803d" text-anchor="middle">synthesize</text>
+  <text x="705" y="523" font-size="10.5" fill="#166534" text-anchor="middle">grounded answer (temp 0) + citations</text>
+
+  <!-- END -->
+  <rect x="648" y="576" width="114" height="40" rx="10" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="705" y="601" font-size="13" font-weight="700" fill="#334155" text-anchor="middle">END</text>
+
+  <!-- forward arrows -->
+  <line x1="430" y1="144" x2="430" y2="174" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="430" y1="240" x2="430" y2="270" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="430" y1="336" x2="430" y2="366" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="430" y1="432" x2="430" y2="458" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- route -> synthesize (ok) -->
+  <line x1="540" y1="510" x2="588" y2="510" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+  <text x="564" y="502" font-size="10" font-weight="600" fill="#15803d" text-anchor="middle">synthesize</text>
+
+  <!-- synthesize -> END -->
+  <line x1="705" y1="542" x2="705" y2="574" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- retry loop: route -> retrieve -->
+  <path d="M320,510 L150,510 L150,304 L328,304" fill="none" stroke="#d97706" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#ar)"/>
+  <text x="150" y="400" font-size="11" font-weight="600" fill="#b45309" text-anchor="middle" transform="rotate(-90 150 400)">retry — widen top_k (max 2 attempts)</text>
+</svg>

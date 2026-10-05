@@ -1,0 +1,150 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#475569"/>
+    </marker>
+    <marker id="arrowRetry" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#d97706"/>
+    </marker>
+  </defs>
+
+  <rect width="1280" height="760" fill="#f8fafc"/>
+
+  <!-- Title -->
+  <text x="40" y="52" font-size="34" font-weight="700" fill="#0f172a">DocuMind</text>
+  <text x="235" y="52" font-size="20" fill="#475569">multi-tenant RAG Q&amp;A over technical docs</text>
+  <text x="40" y="80" font-size="15" fill="#64748b">FastAPI · LangGraph · PostgreSQL + pgvector · Docker · Vite frontend</text>
+  <line x1="40" y1="96" x2="1240" y2="96" stroke="#cbd5e1" stroke-width="2"/>
+
+  <!-- ================= INGESTION ROW ================= -->
+  <text x="40" y="134" font-size="17" font-weight="700" fill="#0f172a">INGESTION PIPELINE (on upload, synchronous)</text>
+
+  <rect x="40" y="150" width="150" height="62" rx="10" fill="#e0f2fe" stroke="#0284c7" stroke-width="1.5"/>
+  <text x="115" y="178" font-size="14" font-weight="600" fill="#075985" text-anchor="middle">Upload</text>
+  <text x="115" y="197" font-size="11" fill="#0369a1" text-anchor="middle">PDF · MD · HTML</text>
+
+  <rect x="222" y="150" width="150" height="62" rx="10" fill="#e0f2fe" stroke="#0284c7" stroke-width="1.5"/>
+  <text x="297" y="172" font-size="14" font-weight="600" fill="#075985" text-anchor="middle">Parse</text>
+  <text x="297" y="190" font-size="10.5" fill="#0369a1" text-anchor="middle">pypdf · BS4</text>
+  <text x="297" y="204" font-size="10.5" fill="#0369a1" text-anchor="middle">resolve-then-chunk</text>
+
+  <rect x="404" y="150" width="150" height="62" rx="10" fill="#e0f2fe" stroke="#0284c7" stroke-width="1.5"/>
+  <text x="479" y="172" font-size="14" font-weight="600" fill="#075985" text-anchor="middle">Chunk</text>
+  <text x="479" y="190" font-size="10.5" fill="#0369a1" text-anchor="middle">1800 chars / 200 overlap</text>
+  <text x="479" y="204" font-size="10.5" fill="#0369a1" text-anchor="middle">header-aware</text>
+
+  <rect x="586" y="150" width="150" height="62" rx="10" fill="#e0f2fe" stroke="#0284c7" stroke-width="1.5"/>
+  <text x="661" y="172" font-size="14" font-weight="600" fill="#075985" text-anchor="middle">Embed</text>
+  <text x="661" y="190" font-size="10.5" fill="#0369a1" text-anchor="middle">VoyageAI</text>
+  <text x="661" y="204" font-size="10.5" fill="#0369a1" text-anchor="middle">voyage-4-lite · 512d</text>
+
+  <line x1="190" y1="181" x2="220" y2="181" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="372" y1="181" x2="402" y2="181" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="554" y1="181" x2="584" y2="181" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="736" y1="181" x2="860" y2="181" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Storage -->
+  <rect x="862" y="138" width="378" height="88" rx="10" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="1051" y="162" font-size="14" font-weight="700" fill="#5b21b6" text-anchor="middle">PostgreSQL + pgvector  (single datastore)</text>
+  <text x="1051" y="184" font-size="11" fill="#6d28d9" text-anchor="middle">users · documents · chunks(embedding Vector(512)) · query_logs</text>
+  <text x="1051" y="203" font-size="11" fill="#6d28d9" text-anchor="middle">embeddings stored in-row · cosine_distance kNN</text>
+  <text x="1051" y="219" font-size="10.5" fill="#8b5cf6" text-anchor="middle">no separate vector DB · exact NN scan (MVP)</text>
+
+  <line x1="40" y1="246" x2="1240" y2="246" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="4 4"/>
+
+  <!-- ================= AGENT ROW ================= -->
+  <text x="40" y="282" font-size="17" font-weight="700" fill="#0f172a">LANGGRAPH AGENT (on query)</text>
+  <text x="320" y="282" font-size="13" fill="#64748b">StateGraph · nodes return partial state · trace accumulated per node</text>
+
+  <!-- user question -->
+  <rect x="40" y="300" width="128" height="150" rx="10" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="104" y="368" font-size="13" font-weight="600" fill="#334155" text-anchor="middle">User</text>
+  <text x="104" y="388" font-size="13" font-weight="600" fill="#334155" text-anchor="middle">question</text>
+  <text x="104" y="414" font-size="10" fill="#64748b" text-anchor="middle">JWT-scoped</text>
+
+  <!-- interpret -->
+  <rect x="196" y="300" width="150" height="150" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="271" y="356" font-size="14" font-weight="700" fill="#15803d" text-anchor="middle">interpret</text>
+  <text x="271" y="374" font-size="14" font-weight="700" fill="#15803d" text-anchor="middle">_query</text>
+  <text x="271" y="398" font-size="10.5" fill="#166534" text-anchor="middle">LLM rewrites to</text>
+  <text x="271" y="412" font-size="10.5" fill="#166534" text-anchor="middle">keyword query</text>
+
+  <!-- retrieve -->
+  <rect x="374" y="300" width="150" height="150" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="449" y="350" font-size="14" font-weight="700" fill="#15803d" text-anchor="middle">retrieve</text>
+  <text x="449" y="374" font-size="10.5" fill="#166534" text-anchor="middle">pgvector kNN</text>
+  <text x="449" y="389" font-size="10.5" fill="#166534" text-anchor="middle">user-scoped</text>
+  <text x="449" y="408" font-size="10.5" fill="#166534" text-anchor="middle">top_k 8→14→20</text>
+
+  <!-- rerank -->
+  <rect x="552" y="300" width="150" height="150" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="627" y="350" font-size="14" font-weight="700" fill="#15803d" text-anchor="middle">rerank</text>
+  <text x="627" y="374" font-size="10.5" fill="#166534" text-anchor="middle">Cohere</text>
+  <text x="627" y="389" font-size="10.5" fill="#166534" text-anchor="middle">rerank-english-v3</text>
+  <text x="627" y="408" font-size="10.5" fill="#166534" text-anchor="middle">keep top 3</text>
+
+  <!-- route diamond -->
+  <polygon points="800,310 880,375 800,440 720,375" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+  <text x="800" y="360" font-size="12" font-weight="700" fill="#b45309" text-anchor="middle">route</text>
+  <text x="800" y="378" font-size="9.5" fill="#92400e" text-anchor="middle">score &lt; 0.5</text>
+  <text x="800" y="391" font-size="9.5" fill="#92400e" text-anchor="middle">&amp; attempts &lt; 2 ?</text>
+
+  <!-- synthesize -->
+  <rect x="912" y="300" width="150" height="150" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="987" y="350" font-size="14" font-weight="700" fill="#15803d" text-anchor="middle">synthesize</text>
+  <text x="987" y="374" font-size="10.5" fill="#166534" text-anchor="middle">grounded answer</text>
+  <text x="987" y="389" font-size="10.5" fill="#166534" text-anchor="middle">temp=0, cite-only</text>
+  <text x="987" y="408" font-size="10.5" fill="#166534" text-anchor="middle">+ citations</text>
+
+  <!-- answer -->
+  <rect x="1090" y="300" width="150" height="150" rx="10" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="1165" y="356" font-size="13" font-weight="600" fill="#334155" text-anchor="middle">Answer</text>
+  <text x="1165" y="378" font-size="10.5" fill="#64748b" text-anchor="middle">+ citations</text>
+  <text x="1165" y="394" font-size="10.5" fill="#64748b" text-anchor="middle">+ trace[]</text>
+
+  <!-- forward arrows -->
+  <line x1="168" y1="375" x2="194" y2="375" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="346" y1="375" x2="372" y2="375" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="524" y1="375" x2="550" y2="375" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="702" y1="375" x2="718" y2="375" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="880" y1="375" x2="910" y2="375" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="895" y="368" font-size="10" fill="#15803d" font-weight="600">ok</text>
+  <line x1="1062" y1="375" x2="1088" y2="375" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- retry loop: route back to retrieve -->
+  <path d="M795,440 L795,478 L449,478 L449,452" fill="none" stroke="#d97706" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arrowRetry)"/>
+  <text x="620" y="497" font-size="11" fill="#b45309" font-weight="600" text-anchor="middle">retry — widen top_k (bounded, max 2 attempts)</text>
+
+  <line x1="40" y1="520" x2="1240" y2="520" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="4 4"/>
+
+  <!-- ================= BOTTOM: MODELS / EVAL / SECURITY ================= -->
+  <!-- Models -->
+  <rect x="40" y="540" width="380" height="190" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="60" y="568" font-size="15" font-weight="700" fill="#0f172a">Models (provider-abstracted)</text>
+  <text x="60" y="595" font-size="12" fill="#334155">LLM:  groq/compound  (temp 0)</text>
+  <text x="60" y="616" font-size="11" fill="#64748b">        swap → gemini-3.5-flash · gpt-4o-mini</text>
+  <text x="60" y="640" font-size="12" fill="#334155">Embed: VoyageAI voyage-4-lite (512d)</text>
+  <text x="60" y="661" font-size="11" fill="#64748b">        swap → text-embedding-3-small · gemini</text>
+  <text x="60" y="685" font-size="12" fill="#334155">Rerank: Cohere rerank-english-v3.0</text>
+  <text x="60" y="709" font-size="11" fill="#64748b">One abstraction point: edit llm_client / embedder only</text>
+
+  <!-- Eval -->
+  <rect x="440" y="540" width="380" height="190" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="460" y="568" font-size="15" font-weight="700" fill="#0f172a">Evaluation (RAGAS, two-phase)</text>
+  <text x="460" y="595" font-size="12" fill="#334155">faithfulness · answer_relevancy</text>
+  <text x="460" y="616" font-size="12" fill="#334155">context_precision · context_recall</text>
+  <text x="460" y="643" font-size="11.5" fill="#64748b">Phase 1 collect.py — app venv, real graph</text>
+  <text x="460" y="663" font-size="11.5" fill="#64748b">Phase 2 score.py — RAGAS-only venv, no app imports</text>
+  <text x="460" y="687" font-size="11.5" fill="#64748b">Judge: Groq llama-3.3-70b (explicit)</text>
+  <text x="460" y="709" font-size="11" fill="#94a3b8">split dodges langchain-core version conflict</text>
+
+  <!-- Security -->
+  <rect x="840" y="540" width="400" height="190" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="860" y="568" font-size="15" font-weight="700" fill="#0f172a">Security &amp; Transparency</text>
+  <text x="860" y="595" font-size="12" fill="#334155">JWT HS256 (python-jose) + bcrypt (passlib)</text>
+  <text x="860" y="616" font-size="11.5" fill="#64748b">24h expiry · HTTPBearer dependency</text>
+  <text x="860" y="643" font-size="12" fill="#334155">Multi-tenant: every query filters owner_id</text>
+  <text x="860" y="664" font-size="11.5" fill="#64748b">retriever joins chunks→documents on user_id</text>
+  <text x="860" y="691" font-size="12" fill="#334155">Trace: each node emits {stage,summary,detail}</text>
+  <text x="860" y="712" font-size="11.5" fill="#64748b">returned in AskResponse → UI renders real pipeline</text>
+</svg>

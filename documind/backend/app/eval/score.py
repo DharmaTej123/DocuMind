@@ -104,7 +104,7 @@ def score(in_path: str, out_path: str):
         per_question.append(
             {
                 "question": row["question"],
-                "type": row["type"],
+                "type": row["category"],
                 "faithfulness": float(df.iloc[i]["faithfulness"]),
                 "answer_relevancy": float(df.iloc[i]["answer_relevancy"]),
                 "context_precision": float(df.iloc[i]["context_precision"]),
