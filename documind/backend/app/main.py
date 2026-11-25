@@ -1,10 +1,12 @@
 from fastapi import FastAPI
-import logging
 from app.core.config import get_settings
-from app.api import auth, documents, query
+from app.core.logging_config import setup_logging
 
 settings = get_settings()
-logging.basicConfig(level=logging.INFO)
+setup_logging(settings.log_level)  # must run before the imports below (they build the graph)
+
+from app.api import auth, documents, query  # noqa: E402
+
 app = FastAPI(title=settings.app_name)
 
 from fastapi.middleware.cors import CORSMiddleware

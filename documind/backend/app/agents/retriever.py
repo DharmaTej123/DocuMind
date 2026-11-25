@@ -23,13 +23,28 @@ def retrieve_node(state: dict) -> dict:
 
     query_embedding = embed_query(query)
 
-    retrieved = vectorstore.search(query_embedding, user_id, top_k)
+    # Keyword side sees the user's original wording too: the rewritten query
+    # may drop exact names or figures that BM25 should match.
+    date_from, date_to = state.get("date_from"), state.get("date_to")
+    retrieved = vectorstore.search(
+        query_embedding, user_id, top_k,
+        query_text=f"{state.get('standalone_question') or state['question']} {query}",
+        date_from=date_from, date_to=date_to,
+    )
 
+    via = [r.get("retrieved_via") for r in retrieved]
+    mode = (
+        f"hybrid (vector-only={via.count('vector')}, keyword-only={via.count('keyword')}, "
+        f"both={via.count('both')})"
+        if any(via)
+        else "vector"
+    )
     retry_note = f" (retry #{attempts}, widened top_k)" if attempts else ""
     trace_entry = {
         "stage": "retrieve",
-        "summary": f"Pulled {len(retrieved)} candidate chunks from {vectorstore.active_store()}.{retry_note}",
-        "detail": f"top_k={top_k}, sources={sorted({r['doc'] for r in retrieved})}",
+        "summary": f"Pulled {len(retrieved)} candidate chunks from {vectorstore.active_store()}, {mode}.{retry_note}",
+        "detail": f"top_k={top_k}, sources={sorted({r['doc'] for r in retrieved})}"
+        + (f", uploaded {date_from or '...'} to {date_to or '...'}" if date_from or date_to else ""),
     }
 
     return {

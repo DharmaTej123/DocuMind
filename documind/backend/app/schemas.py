@@ -3,11 +3,11 @@ Pydantic schemas for API request/response bodies. Kept separate from
 db/models.py (SQLAlchemy ORM models) on purpose — API shape and storage
 shape are allowed to diverge.
 """
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 
 
 # --- Auth ---
@@ -35,6 +35,7 @@ class DocumentResponse(BaseModel):
     id: UUID
     filename: str
     doc_type: str
+    doc_metadata: Optional[dict] = None
     created_at: datetime
 
     class Config:
@@ -43,7 +44,21 @@ class DocumentResponse(BaseModel):
 
 # --- Query ---
 class AskRequest(BaseModel):
-    question: str = Field(min_length=1)
+    # Length cap: very long inputs are a common vehicle for jailbreak attempts.
+    question: str = Field(min_length=1, max_length=2000)
+    # Send the conversation_id from a previous response to ask a follow-up.
+    # Omit it to start a new conversation.
+    conversation_id: Optional[UUID] = None
+    # Only search documents uploaded in this range. Both optional, both inclusive
+    # calendar days in UTC (e.g. "2026-01-01").
+    uploaded_after: Optional[date] = None
+    uploaded_before: Optional[date] = None
+
+    @model_validator(mode="after")
+    def _range_is_ordered(self):
+        if self.uploaded_after and self.uploaded_before and self.uploaded_after > self.uploaded_before:
+            raise ValueError("uploaded_after must be on or before uploaded_before")
+        return self
 
 
 class Citation(BaseModel):
@@ -59,6 +74,7 @@ class TraceStage(BaseModel):
 
 class AskResponse(BaseModel):
     question: str
+    conversation_id: Optional[UUID] = None
     answer: str
     citations: List[Citation]
     trace: List[TraceStage]

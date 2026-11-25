@@ -4,8 +4,10 @@ Upload triggers the full ingestion pipeline synchronously (parse -> chunk ->
 embed -> store). Fine for MVP file sizes; a background queue is a Step-past-MVP
 upgrade noted in docs/REQUIREMENTS.md if upload latency becomes an issue.
 """
+import logging
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
@@ -17,10 +19,13 @@ from app.db.models import User, Document
 from app import vectorstore
 from app.schemas import DocumentResponse
 from app.ingestion.parser import parse_document
-from app.ingestion.chunker import chunk_text
+from app.ingestion.chunker import add_context, chunk_text
 from app.ingestion.embedder import embed_chunks
+from app.ingestion.metadata import extract_doc_metadata
+from app.core.config import get_settings
 
 router = APIRouter()
+logger = logging.getLogger("documind.documents")
 
 SUPPORTED_TYPES = {".pdf": "pdf", ".md": "markdown", ".markdown": "markdown", ".html": "html", ".htm": "html"}
 
@@ -43,22 +48,36 @@ def upload_document(
         shutil.copyfileobj(file.file, tmp)
         tmp_path = tmp.name
 
+    started = time.perf_counter()
+    logger.info("upload start | user=%s file=%s type=%s", user.id, file.filename, doc_type)
     try:
         text = parse_document(tmp_path, doc_type)
-        chunks = chunk_text(text, doc_type)
+        # One LLM call per document (not per chunk); {} if disabled or on any failure.
+        doc_meta = extract_doc_metadata(text, file.filename) if get_settings().extract_doc_metadata else {}
+        chunks = add_context(chunk_text(text, doc_type), file.filename, doc_meta)
+        tables = sum(1 for c in chunks if (c.section or "").startswith("Table"))
+        logger.info(
+            "upload parsed | file=%s text_chars=%d chunks=%d table_chunks=%d",
+            file.filename, len(text), len(chunks), tables,
+        )
         if not chunks:
+            logger.warning("upload rejected | file=%s has no extractable text (scanned PDF?)", file.filename)
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "No extractable content in this file")
 
         embeddings = embed_chunks([c.content for c in chunks])
+        logger.info("upload embedded | file=%s vectors=%d dim=%d", file.filename, len(embeddings), len(embeddings[0]))
 
-        document = Document(owner_id=user.id, filename=file.filename, doc_type=doc_type)
+        document = Document(
+            owner_id=user.id, filename=file.filename, doc_type=doc_type, doc_metadata=doc_meta or None
+        )
         db.add(document)
         db.flush()  # assigns document.id without committing yet
 
         # pgvector: adds Chunk rows to this session. chroma: writes to the local
         # Chroma collection (no Chunk rows in Postgres).
         vectorstore.add_chunks(
-            document.id, user.id, file.filename, chunks, embeddings, db=db
+            document.id, user.id, file.filename, chunks, embeddings, db=db,
+            doc_meta=doc_meta, uploaded_at=document.created_at,
         )
         try:
             db.commit()
@@ -67,6 +86,10 @@ def upload_document(
             vectorstore.delete_document(document.id, db=db)  # drop orphaned vectors
             raise
         db.refresh(document)
+        logger.info(
+            "upload done  | file=%s document_id=%s store=%s %.0f ms",
+            file.filename, document.id, vectorstore.active_store(), (time.perf_counter() - started) * 1000,
+        )
         return document
     finally:
         Path(tmp_path).unlink(missing_ok=True)

@@ -20,10 +20,86 @@ class Chunk:
     section: str
 
 
+GENERIC_SECTIONS = {"unknown", "untitled", ""}
+
+
+def add_context(chunks: list[Chunk], filename: str, meta: dict | None = None) -> list[Chunk]:
+    """
+    Prefixes each chunk with its source and what the whole document is about, e.g.
+    '[Dharma_Tej_Resume.pdf | resume | Dharma Tej | topics: LangGraph, RAG | p.2]'.
+    A chunk from the middle of a document usually doesn't repeat the document's
+    subject (a resume's project bullets never say the person's name), so
+    embeddings, BM25 and the reranker would otherwise have nothing to match a
+    name-based query against. Done once at ingestion so every stage sees it.
+    meta comes from ingestion/metadata.py and may be empty.
+    """
+    meta = meta or {}
+    for chunk in chunks:
+        parts = [filename]
+        if meta.get("kind"):
+            parts.append(meta["kind"])
+        if meta.get("subject"):
+            parts.append(meta["subject"])
+        if meta.get("topics"):
+            parts.append("topics: " + ", ".join(meta["topics"]))
+        if chunk.section and chunk.section not in GENERIC_SECTIONS:
+            parts.append(chunk.section)
+        chunk.content = f"[{' | '.join(parts)}]\n{chunk.content}"
+    return chunks
+
+
+PAGE_RE = re.compile(r"<<<PAGE (\d+)>>>")
+TABLE_RE = re.compile(r"<<<TABLE>>>\n(.*?)\n<<<END_TABLE>>>", re.DOTALL)
+
+
 def chunk_text(text: str, doc_type: str) -> list[Chunk]:
     if doc_type in ("markdown", "html"):
         return _chunk_by_headers(text)
+    if doc_type == "pdf" and PAGE_RE.search(text):
+        return _chunk_pdf(text)
     return _chunk_fixed_size(text)
+
+
+def _chunk_pdf(text: str) -> list[Chunk]:
+    """
+    Page-aware PDF chunking. Prose is chunked fixed-size within a page and
+    labelled 'p.N' for citations. Each table stays whole in its own chunk
+    (labelled 'Table p.N'); tables over MAX_CHUNK_CHARS are split by rows with
+    the header row repeated, so no chunk is ever a bare run of numbers.
+    """
+    pieces = PAGE_RE.split(text)  # ['', '1', body1, '2', body2, ...]
+    chunks: list[Chunk] = []
+    for i in range(1, len(pieces) - 1, 2):
+        page, body = pieces[i], pieces[i + 1]
+        cursor = 0
+        for m in TABLE_RE.finditer(body):
+            chunks += _chunk_fixed_size(body[cursor:m.start()], section=f"p.{page}")
+            chunks += _chunk_table(m.group(1).strip(), page)
+            cursor = m.end()
+        chunks += _chunk_fixed_size(body[cursor:], section=f"p.{page}")
+    return chunks
+
+
+def _chunk_table(markdown: str, page: str) -> list[Chunk]:
+    section = f"Table p.{page}"
+    label = f"[Table from page {page}]\n"
+    if len(label) + len(markdown) <= MAX_CHUNK_CHARS:
+        return [Chunk(content=label + markdown, section=section)]
+
+    lines = markdown.split("\n")
+    header = "\n".join(lines[:2])  # header row + separator row
+    chunks: list[Chunk] = []
+    current: list[str] = []
+    size = len(label) + len(header)
+    for row in lines[2:]:
+        if current and size + len(row) + 1 > MAX_CHUNK_CHARS:
+            chunks.append(Chunk(content=label + header + "\n" + "\n".join(current), section=section))
+            current, size = [], len(label) + len(header)
+        current.append(row)
+        size += len(row) + 1
+    if current:
+        chunks.append(Chunk(content=label + header + "\n" + "\n".join(current), section=section))
+    return chunks
 
 
 def _real_header_matches(text: str) -> list:

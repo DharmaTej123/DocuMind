@@ -61,7 +61,72 @@ def _parse_html(file_path: str) -> str:
     return soup.get_text(separator="\n", strip=True)
 
 
+# Markers emitted for PDFs so the chunker can recover page numbers and keep
+# tables intact. See ingestion/chunker.py (_chunk_pdf).
+PAGE_MARK = "<<<PAGE {n}>>>"
+TABLE_START = "<<<TABLE>>>"
+TABLE_END = "<<<END_TABLE>>>"
+
+
+def _cell(value) -> str:
+    """One table cell as single-line, pipe-safe text."""
+    if value is None:
+        return ""
+    return " ".join(str(value).split()).replace("|", "/")
+
+
+def _table_to_markdown(rows: list[list]) -> str:
+    """Markdown table from pdfplumber rows; first row is treated as the header."""
+    cleaned = [[_cell(c) for c in row] for row in rows]
+    cleaned = [r for r in cleaned if any(r)]  # drop fully empty rows
+    if len(cleaned) < 2 or max(len(r) for r in cleaned) < 2:
+        return ""  # a 1-row or 1-column "table" is almost always a false positive
+    width = max(len(r) for r in cleaned)
+    cleaned = [r + [""] * (width - len(r)) for r in cleaned]
+    lines = ["| " + " | ".join(cleaned[0]) + " |", "|" + "---|" * width]
+    lines += ["| " + " | ".join(r) + " |" for r in cleaned[1:]]
+    return "\n".join(lines)
+
+
 def _parse_pdf(file_path: str) -> str:
+    """
+    Text PDFs with tables. pdfplumber finds tables and we render each as a
+    Markdown table (columns preserved); the remaining page text is extracted
+    with table areas excluded so numbers aren't duplicated. Output carries
+    page and table markers for the chunker. Scanned PDFs (no text layer) still
+    yield nothing; there is no OCR.
+
+    Falls back to pypdf plain text if pdfplumber is unavailable or fails.
+    """
+    try:
+        import pdfplumber
+    except ImportError:
+        return _parse_pdf_plain(file_path)
+
+    try:
+        parts: list[str] = []
+        with pdfplumber.open(file_path) as pdf:
+            for number, page in enumerate(pdf.pages, start=1):
+                tables = page.find_tables()
+                text_page = page
+                for t in tables:
+                    text_page = text_page.outside_bbox(t.bbox)
+                text = (text_page.extract_text() or "").strip()
+
+                block = [PAGE_MARK.format(n=number)]
+                if text:
+                    block.append(text)
+                for t in tables:
+                    md = _table_to_markdown(t.extract())
+                    if md:
+                        block += [TABLE_START, md, TABLE_END]
+                parts.append("\n".join(block))
+        return "\n\n".join(parts)
+    except Exception:
+        return _parse_pdf_plain(file_path)
+
+
+def _parse_pdf_plain(file_path: str) -> str:
     reader = PdfReader(file_path)
     pages = [page.extract_text() or "" for page in reader.pages]
     return "\n\n".join(pages)

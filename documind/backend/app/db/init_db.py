@@ -29,6 +29,17 @@ def init_db():
     Base.metadata.create_all(engine)
     print("Tables created:", ", ".join(Base.metadata.tables.keys()))
 
+    # create_all never alters existing tables, so columns added after a database
+    # was first created need an explicit, idempotent migration here.
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS doc_metadata JSONB;"))
+        conn.execute(text("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS conversation_id UUID;"))
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_query_logs_conversation_id ON query_logs (conversation_id);")
+        )
+        conn.commit()
+    print("Migrations applied (documents.doc_metadata, query_logs.conversation_id).")
+
 
 if __name__ == "__main__":
     init_db()
