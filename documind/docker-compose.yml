@@ -24,6 +24,7 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/documind
+      CHROMA_PATH: /chroma_data  # only used when VECTOR_STORE=chroma
     ports:
       - "8000:8000"
     depends_on:
@@ -31,6 +32,7 @@ services:
         condition: service_healthy
     volumes:
       - ./backend:/app
+      - documind_chroma_data:/chroma_data
 
   frontend:
     build:
@@ -48,3 +50,4 @@ services:
 
 volumes:
   documind_db_data:
+  documind_chroma_data:

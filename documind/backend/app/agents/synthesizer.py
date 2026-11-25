@@ -39,7 +39,7 @@ def synthesize_node(state: dict) -> dict:
     trace_entry = {
         "stage": "synthesize",
         "summary": "Answer generated and grounded in the reranked chunks.",
-        "detail": f"model={settings.openai_model}, citations_attached={len(citations)}",
+        "detail": f"model={getattr(settings, f'{settings.llm_provider}_model', settings.llm_provider)}, citations_attached={len(citations)}",
     }
 
     return {

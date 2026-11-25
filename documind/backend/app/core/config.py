@@ -22,7 +22,12 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 60 * 24  # 24h
 
     # LLM (default provider: Gemini — see docs/REQUIREMENTS.md Decisions Log)
-    llm_provider: str = "groq"
+    llm_provider: str = "anthropic"
+
+    # Anthropic (Claude). Anthropic has no embeddings API, so embeddings for
+    # this provider come from VoyageAI (see ingestion/embedder.py).
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-4-5"
 
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.5-flash"
@@ -34,7 +39,7 @@ class Settings(BaseSettings):
     voyageai_embedding_model: str = "voyage-4-lite"
     voyageai_api_key: str = ""
     # Kept for anyone who wants to switch llm_provider back to "openai"
-    openai_api_key: str = ""
+    openai_api_key: str = "voc-210425417112667747992946abc9bc0d7b650.29552297"
     openai_model: str = "gpt-4o-mini"
 
     # Embedding vector dimension stored in pgvector (db/models.py EMBEDDING_DIM).
@@ -43,6 +48,12 @@ class Settings(BaseSettings):
     # drop-in match for OpenAI's text-embedding-3-small dimension, meaning
     # no schema migration is needed when switching providers.
     embedding_dim: int = 512
+
+    # Vector store: "pgvector" (default) or "chroma" (TEMPORARY local alternative).
+    # Existing data is NOT migrated between stores; re-upload documents after
+    # switching. Chroma stores vectors on disk at chroma_path.
+    vector_store: str = "pgvector"
+    chroma_path: str = "./chroma_data"
 
     # Rerank
     cohere_api_key: str = ""

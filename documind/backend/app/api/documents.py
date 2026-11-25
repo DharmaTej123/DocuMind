@@ -13,7 +13,8 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user
 from app.db.session import get_db
-from app.db.models import User, Document, Chunk
+from app.db.models import User, Document
+from app import vectorstore
 from app.schemas import DocumentResponse
 from app.ingestion.parser import parse_document
 from app.ingestion.chunker import chunk_text
@@ -54,16 +55,17 @@ def upload_document(
         db.add(document)
         db.flush()  # assigns document.id without committing yet
 
-        for chunk, embedding in zip(chunks, embeddings):
-            db.add(
-                Chunk(
-                    document_id=document.id,
-                    content=chunk.content,
-                    embedding=embedding,
-                    section=chunk.section,
-                )
-            )
-        db.commit()
+        # pgvector: adds Chunk rows to this session. chroma: writes to the local
+        # Chroma collection (no Chunk rows in Postgres).
+        vectorstore.add_chunks(
+            document.id, user.id, file.filename, chunks, embeddings, db=db
+        )
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            vectorstore.delete_document(document.id, db=db)  # drop orphaned vectors
+            raise
         db.refresh(document)
         return document
     finally:
@@ -89,6 +91,6 @@ def delete_document(
     if document is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
 
-    db.query(Chunk).filter(Chunk.document_id == document.id).delete()
+    vectorstore.delete_document(document.id, db=db)
     db.delete(document)
     db.commit()

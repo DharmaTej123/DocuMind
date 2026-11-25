@@ -15,7 +15,7 @@ os.environ.pop("CURL_CA_BUNDLE", None)
 os.environ.pop("SSL_CERT_FILE", None)
 from app.core.config import get_settings
 import voyageai
-# OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
+OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 
 def embed_chunks(chunks: list[str]) -> list[list[float]]:
     """Batch-embeds chunk texts. Returns one vector per input chunk, in order."""
@@ -23,12 +23,13 @@ def embed_chunks(chunks: list[str]) -> list[list[float]]:
         return []
 
     settings = get_settings()
-    if settings.llm_provider == "groq":
+    # Groq and Anthropic have no embeddings API, so both use VoyageAI.
+    if settings.llm_provider in ("groq", "anthropic"):
         return _embed_chunks_voyageai(chunks, settings)
     # if settings.llm_provider == "gemini":
     #     return _embed_chunks_gemini(chunks, settings)
-    # if settings.llm_provider == "openai":
-    #     return _embed_chunks_openai(chunks, settings)
+    if settings.llm_provider == "openai":
+        return _embed_chunks_openai(chunks, settings)
     raise ValueError(f"Unsupported llm_provider: {settings.llm_provider}")
 
 def _embed_chunks_voyageai(chunks: list[str], settings) -> list[list[float]]:
@@ -40,12 +41,21 @@ def _embed_chunks_voyageai(chunks: list[str], settings) -> list[list[float]]:
         output_dimension=settings.embedding_dim
     )
     return response.embeddings
-# def _embed_chunks_openai(chunks: list[str], settings) -> list[list[float]]:
-#     from openai import OpenAI
+def _embed_chunks_openai(chunks: list[str], settings) -> list[list[float]]:
+    from openai import OpenAI
 
-#     client = OpenAI(api_key=settings.openai_api_key)
-#     response = client.embeddings.create(model=OPENAI_EMBEDDING_MODEL, input=chunks)
-#     return [item.embedding for item in response.data]
+    client = OpenAI(
+        api_key=settings.openai_api_key,
+        base_url="https://openai.vocareum.com/v1",  # same gateway as llm_client.py
+    )
+    # text-embedding-3-small is natively 1536-dim but supports `dimensions`;
+    # request settings.embedding_dim so vectors match the Vector(512) column.
+    response = client.embeddings.create(
+        model=OPENAI_EMBEDDING_MODEL,
+        input=chunks,
+        dimensions=settings.embedding_dim,
+    )
+    return [item.embedding for item in response.data]
 
 
 def _embed_chunks_gemini(chunks: list[str], settings) -> list[list[float]]:
