@@ -18,6 +18,7 @@
 7. [Known Gaps / "What I'd Improve"](#7-known-gaps--what-id-improve)
 8. [RAGAS Metrics — How to Interpret Scores](#8-ragas-metrics--how-to-interpret-scores)
 9. [Live Demo Script](#9-live-demo-script)
+10. [Recent Upgrades — Talking Points and Q&A](#10-recent-upgrades--talking-points-and-qa)
 
 ---
 
@@ -73,6 +74,11 @@ I'd tell this as a phased story, because it shows engineering judgment:
 6. **Evaluation** — a reproducible RAGAS harness (faithfulness, answer relevancy,
    context precision, context recall), split into two phases to dodge a
    dependency conflict.
+7. **Fixing real failures** — testing on real documents exposed retrieval gaps, each
+   fixed with a measured change: hybrid BM25 + vector search for exact names and
+   numbers, page-aware PDF parsing with tables kept whole, OCR for scanned pages,
+   document-level metadata on every chunk, and conversation memory with guardrails.
+   See section 10.
 
 ### The agent (lead with this)
 
@@ -80,19 +86,25 @@ The answer engine is a **LangGraph `StateGraph`** with four nodes —
 `interpret_query → retrieve → rerank → synthesize` — plus a **conditional edge
 after rerank** that can loop back to `retrieve`.
 
-- **interpret_query**: an LLM rewrites the raw question into a keyword-rich search
-  query. The question a human asks and the string that searches best aren't the
-  same thing.
-- **retrieve**: embeds the query and runs a pgvector cosine kNN search **scoped to
-  the user's own documents** (that's where tenant isolation lives). Starts at
+- **interpret_query**: one LLM call that returns a keyword-rich search query *and* a
+  standalone version of the question (so "and what tech did he use?" becomes a full
+  question using the conversation history). The question a human asks and the string
+  that searches best aren't the same thing.
+- **retrieve**: embeds the query and runs a **hybrid** search, vector kNN fused with
+  BM25 keyword search by reciprocal rank, **scoped to the user's own documents** (that's
+  where tenant isolation lives) and optionally to an upload-date range. Starts at
   `top_k = 8`.
-- **rerank**: Cohere's cross-encoder rescoring, keeping the **top 3**. Classic
-  two-stage design — vector search for recall, reranker for precision.
-- **route_after_rerank**: if the best reranked chunk scores below **0.5** and we
-  haven't hit the **2-attempt cap**, loop back to retrieve with a **wider**
-  `top_k` (8 → 14 → 20); otherwise synthesize.
-- **synthesize**: strict grounding prompt ("answer ONLY from context, say so if
-  it isn't there"), returns the answer plus structured citations.
+- **rerank**: Cohere's cross-encoder rescoring of the user's own question (not the
+  keyword rewrite), keeping the **top 3**. Classic two-stage design: retrieval for
+  recall, reranker for precision.
+- **route_after_rerank**: if the best reranked chunk scores below **0.1** (a tuned,
+  configurable threshold) and we haven't hit the **2-attempt cap**, loop back to
+  retrieve with a **wider** `top_k` (8 → 14 → 20); otherwise synthesize. If nothing was
+  retrieved at all, it skips the retry, since a wider search can't add results.
+- **synthesize**: a system prompt with explicit data boundaries, then the chunks inside
+  `<context>` tags and the question inside `<question>`. The model cites chunks as
+  `[1]`, `[2]`, or replies `NOT_FOUND`, which becomes a plain "couldn't find it" with
+  no citations.
 
 The two judgment calls I'd emphasize: the loop is **bounded** (an unbounded agent
 loop just burns API calls), and the retry **does something different** (widening
@@ -100,10 +112,12 @@ loop just burns API calls), and the retry **does something different** (widening
 
 ### Storage
 
-Everything's in **PostgreSQL + pgvector** — no separate vector DB. Embeddings live
-in-row on the `chunks` table. One datastore, transactional consistency between a
-doc and its chunks, no extra infra. Trade-off: it won't beat a dedicated vector DB
-at huge scale, which I'd acknowledge up front.
+**PostgreSQL + pgvector** by default: embeddings live in-row on the `chunks` table.
+One datastore, transactional consistency between a doc and its chunks, no extra infra.
+Trade-off: it won't beat a dedicated vector DB at huge scale, which I'd acknowledge up
+front. The vector store sits behind a small interface (`vectorstore/`), so **Chroma** can
+replace it with one setting (`VECTOR_STORE=chroma`); users, documents and history always
+stay in Postgres. The two stores are not migrated into each other.
 
 ---
 
@@ -142,10 +156,14 @@ first-class part of the response.
 class AgentState(TypedDict):
     question: str
     user_id: str
-    interpreted_query: Optional[str]
+    history: List[dict]                  # earlier {question, answer} turns, oldest first
+    interpreted_query: Optional[str]     # keyword query for retrieval
+    standalone_question: Optional[str]   # follow-up rewritten to stand alone
     retrieved_chunks: Optional[List[dict]]
     reranked_chunks: Optional[List[dict]]
     retrieval_attempts: int
+    date_from: Optional[str]             # upload-date filter, inclusive ISO dates
+    date_to: Optional[str]
     answer: Optional[str]
     citations: Optional[List[dict]]
     trace: List[dict]   # one entry per node: {stage, summary, detail}
@@ -177,14 +195,16 @@ logs its own ASCII diagram via `app.get_graph().draw_ascii()` (needs the
 **The conditional loop:**
 
 ```python
-MAX_RETRIEVAL_ATTEMPTS = 2
-RERANK_CONFIDENCE_THRESHOLD = 0.5
+MAX_RETRIEVAL_ATTEMPTS = 2   # threshold: settings.rerank_confidence_threshold (default 0.1)
 
 def route_after_rerank(state):
+    threshold = get_settings().rerank_confidence_threshold
     reranked = state.get("reranked_chunks") or []
     attempts = state.get("retrieval_attempts", 0)
     top_score = max((c.get("relevance_score", 0) for c in reranked), default=0)
-    if not reranked or (top_score < 0.5 and attempts < MAX_RETRIEVAL_ATTEMPTS):
+    if not state.get("retrieved_chunks"):
+        return "synthesize"      # nothing retrieved: a wider search can't help
+    if not reranked or (top_score < threshold and attempts < MAX_RETRIEVAL_ATTEMPTS):
         return "retry"
     return "synthesize"
 ```
@@ -201,10 +221,10 @@ top_k = BASE_TOP_K + (attempts * WIDEN_PER_ATTEMPT)   # 8 -> 14 -> 20
 
 | Node | File | Input → Output | What it does |
 |---|---|---|---|
-| interpret_query | `query_interpreter.py` | `question` → `interpreted_query` | LLM rewrites into keyword-rich query |
-| retrieve | `retriever.py` | `interpreted_query` → `retrieved_chunks` | pgvector cosine kNN, user-scoped, widening top_k |
-| rerank | `reranker.py` | `retrieved_chunks` → `reranked_chunks` | Cohere `rerank-english-v3.0`, keep top 3 |
-| synthesize | `synthesizer.py` | `reranked_chunks` → `answer`, `citations` | Grounded LLM answer with citations |
+| interpret_query | `query_interpreter.py` | `question`, `history` → `interpreted_query`, `standalone_question` | One LLM call: keyword query plus a standalone rewrite of follow-ups |
+| retrieve | `retriever.py` | `interpreted_query` → `retrieved_chunks` | Hybrid vector + BM25 (RRF), user-scoped, optional date range, widening top_k |
+| rerank | `reranker.py` | `retrieved_chunks` → `reranked_chunks` | Cohere `rerank-english-v3.0` on the standalone question, keep top 3 |
+| synthesize | `synthesizer.py` | `reranked_chunks`, `history` → `answer`, `citations` | Bounded prompt; cites `[n]` or replies `NOT_FOUND` |
 
 The retriever enforces **multi-tenant isolation** with
 `.filter(Document.owner_id == user_id)` — a user can only ever retrieve from their
@@ -218,7 +238,12 @@ own documents.
   then-chunk"), so code and its explanation stay in the same chunk. Missing files
   become visible `[code omitted: ...]` placeholders, never silent drops.
 - **HTML**: BeautifulSoup, strips `script/style/nav/footer`, extracts text.
-- **PDF**: pypdf, concatenates per-page `extract_text()`.
+- **PDF**: pdfplumber extracts text page by page and turns each detected table into
+  a Markdown table (columns preserved); page and table markers are emitted for the
+  chunker. Pages with no real text layer (a scan's only text is often its page
+  number) are OCR'd locally with RapidOCR and rebuilt into rows
+  (`Date | Description | Branch | Venue`). pypdf plain text is the fallback, and the
+  fallback is logged loudly because it loses page numbers and tables.
 
 **Chunking** (`ingestion/chunker.py`):
 - `MAX_CHUNK_CHARS = 1800`, `OVERLAP_CHARS = 200`.
@@ -226,8 +251,16 @@ own documents.
   straddles unrelated sections, and the header becomes citation metadata. A guard
   (`_real_header_matches`) ignores `#` lines inside fenced code blocks so a bash
   comment isn't mistaken for a heading.
-- **Fixed-size + overlap fallback** for PDF (no structure after extraction) and
-  for any header section still over 1800 chars.
+- **Page-aware for PDF**: prose chunks are labelled `p.N`, each table stays whole in
+  its own chunk (`Table p.N`, split by rows with the header repeated if it is too
+  long), and OCR'd pages become `OCR p.N`. Chunks with no letters (just a page
+  number) are dropped.
+- **Fixed-size + overlap fallback** for any header section still over 1800 chars,
+  and for PDFs parsed without page markers.
+- **Context prefix**: every chunk is stored as
+  `[file | kind | subject | topics: ... | section]` followed by its text. The
+  document-level fields come from one LLM call per upload. Without them a chunk
+  from the middle of a resume never contains the person's name.
 
 **Why those numbers:**
 - `1800` chars — big enough to hold a full API-reference section (answer stays
@@ -236,50 +269,60 @@ own documents.
   spanning a split isn't cut in half.
 
 **Embedding** (`ingestion/embedder.py`): provider-switchable like the LLM client.
-Active provider `groq` routes to **VoyageAI `voyage-4-lite`**, output-dimension-
-matched to the pgvector column so provider swaps never need a schema migration.
-Commented-out OpenAI (`text-embedding-3-small`) and Gemini
-(`gemini-embedding-001`) implementations remain for easy switching.
+The default provider `anthropic` (like `groq`, which has no embeddings API either) routes
+to **VoyageAI `voyage-4-lite`**; OpenAI uses `text-embedding-3-small` and Gemini
+`gemini-embedding-001`. All are asked for 512 dimensions to match the pgvector column.
+Vectors from different models are not comparable, so a provider switch means
+re-uploading documents.
 
-**Retrieval** is vector-only (cosine) kNN — not hybrid keyword+vector — followed
-by cross-encoder reranking. The two-stage split is deliberate: cheap wide recall,
-then expensive accurate precision on a small candidate set.
+**Retrieval** is **hybrid**: vector kNN plus BM25 keyword search (in-process, per user,
+cached for 60 seconds), merged by reciprocal rank fusion, then reranked by a
+cross-encoder. Embeddings match meaning but are weak on exact names and numbers; BM25
+covers that gap. The two-stage split is deliberate: cheap wide recall, then expensive
+accurate precision on a small candidate set.
 
 ### 3.4 LLM & embeddings config
 
 `core/llm_client.py` `get_llm()` returns a LangChain chat model (drops straight
-into LangGraph nodes), switching on `settings.llm_provider`:
+into LangGraph nodes), looked up by the `LLMProvider` enum in `settings.llm_provider`.
+A typo in `LLM_PROVIDER` fails when the app starts, and both the LLM client and the
+embedder check at import that every provider has an entry:
 
-| Provider | Model | Notes |
+| Provider | Default model | Notes |
 |---|---|---|
-| groq (active) | `groq/compound` | via `langchain-groq` |
-| gemini | `gemini-3.5-flash` | via `langchain-google-genai` |
+| anthropic (default) | `claude-sonnet-4-5` (configurable) | via `langchain-anthropic`; embeds with VoyageAI |
 | openai | `gpt-4o-mini` | via `langchain-openai` |
+| gemini | `gemini-3.5-flash` | via `langchain-google-genai` |
+| groq | `groq/compound` | via `langchain-groq`; embeds with VoyageAI |
 
 All at **temperature 0** for determinism. Nodes never import a provider SDK
 directly — swapping providers = editing only `llm_client.py` / `embedder.py`.
 
-Config (`core/config.py`) is loaded from `.env` via `pydantic-settings`, cached
-with `lru_cache`. `embedding_dim = 512` in code matches the pgvector
-`Vector(512)` column.
+Config (`core/config.py`) is loaded from the single `documind/.env` (found from the
+file's own location, so it works from any directory) via `pydantic-settings`, cached
+with `lru_cache`. `embedding_dim = 512` matches the pgvector `Vector(512)` column.
 
 ### 3.5 Data storage
 
 **PostgreSQL + pgvector**, embeddings stored in-row. `DATABASE_URL` uses the
-psycopg3 driver. `db/init_db.py` is idempotent:
-`CREATE EXTENSION IF NOT EXISTS vector;` then `Base.metadata.create_all(engine)`.
+psycopg3 driver. `db/init_db.py` is idempotent: it creates the extension and tables,
+then applies `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migrations, because
+`create_all` never alters existing tables.
 
 Four tables (`db/models.py`):
 
 | Table | Key columns |
 |---|---|
 | `users` | id (UUID), email (unique), hashed_password, created_at |
-| `documents` | id, owner_id (FK), filename, doc_type, created_at |
+| `documents` | id, owner_id (FK), filename, doc_type, **doc_metadata (JSONB: subject, kind, topics)**, created_at |
 | `chunks` | id, document_id (FK), content, **embedding Vector(512)**, section |
-| `query_logs` | id, user_id, question, answer, created_at |
+| `query_logs` | id, user_id, **conversation_id**, question, answer, created_at |
 
-The `chunks` table *is* the vector store. Retrieval uses pgvector's
-`cosine_distance`. No ANN index (IVFFlat/HNSW) yet — exact NN scan, fine for MVP.
+With pgvector the `chunks` table *is* the vector store, searched by `cosine_distance`;
+with `VECTOR_STORE=chroma` the chunks and vectors live in a local Chroma collection
+instead (each vector carries `owner_id`, `filename`, `section`, subject/kind/topics and
+an `uploaded_ts`). No ANN index (IVFFlat/HNSW) yet; exact scan is fine at this scale.
+The upload-date filter uses `documents.created_at` (pgvector) or `uploaded_ts` (Chroma).
 
 ### 3.6 Evaluation (RAGAS, two-phase)
 
@@ -296,7 +339,9 @@ needing `langchain-core >=1.4`:
   builds a RAGAS `EvaluationDataset`, scores it. Judge LLM is Groq
   `llama-3.3-70b-versatile`, passed explicitly so RAGAS doesn't default to an
   OpenAI judge. `answer_relevancy` also needs an embeddings model, supplied via
-  VoyageAI.
+  VoyageAI. (Honest caveat: the scorer has not been run end to end, the eval set is
+  only 4 questions, and the VoyageAI wrapper likely needs a LangChain adapter. See
+  `docs/EVAL.md`.)
 
 Splitting generation from scoring sidesteps the conflict and is cleaner anyway —
 "produce answers" and "grade answers" needn't share a dependency tree.
@@ -322,30 +367,36 @@ Dockerfile: `python:3.11-slim`, `pip install .` from pyproject, runs
 
 ```
 PROJECT     DocuMind — multi-tenant RAG Q&A over technical docs (FastAPI corpus)
-STACK       Python 3.11 · FastAPI · LangGraph · Postgres+pgvector · Docker · Vite FE
+STACK       Python 3.11 · FastAPI · LangGraph · Postgres+pgvector (Chroma optional) · Docker · Vite FE
 
 AGENT (LangGraph StateGraph)
   interpret_query → retrieve → rerank → [route] → synthesize → END
                         ^__________________|   (retry, wider top_k)
   State: TypedDict, nodes return partial dicts (merged), trace accumulated per node
-  Loop:  retry if top rerank score < 0.5 AND attempts < 2
+  Loop:  retry if top rerank score < 0.1 (configurable) AND attempts < 2; none if nothing retrieved
   top_k: 8 → 14 → 20  (BASE 8 + 6/attempt)
+  Memory: conversation_id → last 4 Q&A turns; follow-ups rewritten to standalone questions
 
-RETRIEVAL   Two-stage: pgvector cosine kNN (recall) → Cohere rerank-english-v3.0 (precision, top 3)
-            User-scoped: filter Document.owner_id == user_id
+RETRIEVAL   Hybrid: vector kNN + BM25 keyword (RRF) → Cohere rerank-english-v3.0 (top 3)
+            User-scoped (owner_id), optional upload-date range
+            Reranker sees the user's own question, not the keyword rewrite
 
-MODELS      LLM     groq/compound (pluggable: gemini-3.5-flash, gpt-4o-mini), temp=0
-            Embed   VoyageAI voyage-4-lite (pluggable: text-embedding-3-small, gemini-embedding-001)
+ANSWERING   <context>/<question> data tags, "data not instructions" system prompt,
+            [n] citations, NOT_FOUND → plain "couldn't find it" (no citations), 2000-char question cap
+
+MODELS      LLM     anthropic (default; pluggable: openai, gemini, groq; LLMProvider enum), temp=0
+            Embed   VoyageAI voyage-4-lite for anthropic/groq (openai/gemini use their own), 512d
             Rerank  Cohere rerank-english-v3.0
             Judge   Groq llama-3.3-70b-versatile (eval only)
 
-CHUNKING    1800 chars max, 200 overlap
-            MD/HTML → split on H1-H3 headers (code-fence-aware); PDF → fixed-size+overlap
-            Why: section-sized = whole answers; overlap = continuity across splits
+CHUNKING    1800 chars max, 200 overlap, every chunk prefixed [file | kind | subject | topics | section]
+            MD/HTML → split on H1-H3 headers (code-fence-aware)
+            PDF → page-aware (p.N), tables kept whole as Markdown (Table p.N), scans OCR'd (OCR p.N)
+            Why: section-sized = whole answers; overlap = continuity; prefix = chunks know who/what they're about
 
 STORAGE     Postgres + pgvector (embeddings in-row), 4 tables:
-            users · documents · chunks(embedding Vector(512)) · query_logs
-            No separate vector DB; no ANN index yet (exact NN scan)
+            users · documents(doc_metadata) · chunks(embedding Vector(512)) · query_logs(conversation_id)
+            Chroma via VECTOR_STORE=chroma; no ANN index yet (exact scan)
 
 EVAL        RAGAS — faithfulness, answer_relevancy, context_precision, context_recall
             Two phases / two venvs (collect in app venv, score in RAGAS venv) to dodge dep conflict
@@ -366,12 +417,12 @@ ASCII fallback (same graph, for terminals / plain-text contexts):
 ```
                         ┌─────────────────────┐
           user question │   interpret_query   │  LLM rewrites raw question
-          ─────────────▶│  (query_interpreter)│  into keyword-rich query
+          ─────────────▶│  (query_interpreter)│  + standalone follow-up question
                         └──────────┬──────────┘
-                                   │ interpreted_query
+                                   │ interpreted_query, standalone_question
                                    ▼
                         ┌─────────────────────┐
-                        │      retrieve       │  pgvector cosine kNN,
+                        │      retrieve       │  hybrid vector + BM25 (RRF),
                    ┌───▶│    (retriever)      │  user-scoped, top_k = 8+6·attempts
                    │    └──────────┬──────────┘
                    │               │ retrieved_chunks
@@ -383,7 +434,7 @@ ASCII fallback (same graph, for terminals / plain-text contexts):
                    │               │ reranked_chunks
                    │               ▼
                    │        ╔═══════════════╗
-          "retry"  │        ║ route_after_  ║   top score < 0.5
+          "retry"  │        ║ route_after_  ║   top score < 0.1
       (wider top_k)└────────║    rerank     ║   AND attempts < 2  ? ─▶ retry
                             ╚═══════╤═══════╝                     else synthesize
                                     │ "synthesize"
@@ -410,12 +461,15 @@ node returns a partial state update, and the merged `trace` list is the audit lo
 
 **Q: Walk me through what happens on an ambiguous question.**
 `interpret_query` cleans it up, `retrieve` pulls the top 8 chunks, `rerank`
-rescores them with Cohere. If the best score is below 0.5 and we're under 2
+rescores them with Cohere. If the best score is below 0.1 and we're under 2
 attempts, `route_after_rerank` returns `"retry"`, which loops back to `retrieve`
 with `top_k` widened to 14 (then 20). If it still can't clear the bar, it
-synthesizes with what it has — and because the synthesis prompt is strictly
-grounded, a weak context yields an honest "the docs don't cover this" rather than
-a hallucination.
+synthesizes with what it has, and because the prompt tells the model to reply
+`NOT_FOUND` when the chunks don't contain the answer, a weak context yields an
+honest "I couldn't find that in your documents" rather than a hallucination. (The
+threshold started at 0.5. Real runs showed Cohere scores for correct answers sitting
+around 0.1 to 0.3, so 0.5 caused needless retries; Cohere scores aren't calibrated
+probabilities, which is why the value is configurable and was tuned from logged scores.)
 
 **Q: Why rerank at all if you already have vector similarity?**
 Vector cosine distance measures embedding proximity, which is good for recall but
@@ -430,8 +484,8 @@ across chunks, so no single retrieved chunk contains the whole answer. Too large
 and retrieval gets imprecise (lots of irrelevant text per chunk) and you waste
 context budget. 1800 chars is roughly one documentation section. For structured
 docs I split on headers first so chunks align with semantic units, and only fall
-back to fixed-size windowing when there's no structure (PDF) or a section is
-oversized.
+back to fixed-size windowing when a section is oversized. PDFs are chunked per page,
+with tables kept whole so a row of numbers never loses its column headers.
 
 **Q: Why overlap?**
 A fixed-size split can cut a sentence or a code block in half, so an answer that
@@ -448,11 +502,14 @@ corpus grew, I'd add an HNSW/IVFFlat index first, and only move off Postgres if
 that stopped being enough.
 
 **Q: How do you prevent hallucination?**
-Three ways: temperature 0, a strict grounding system prompt that says to answer
-only from the provided context and to say so plainly when the answer isn't there,
-and citations that tie each answer back to a source doc and section — so a
-reviewer can verify grounding. The retrieval retry also reduces the "weak context
-→ guess" failure mode by trying harder before answering.
+Several layers: temperature 0; a system prompt that says to answer only from the
+chunks and to reply `NOT_FOUND` (mapped to a plain "couldn't find it" with no
+citations) when they don't contain the answer; an optional rerank-score gate that
+skips the LLM entirely when even the best chunk is weak; and inline `[n]` citations
+tying each claim to a source doc and section so a reviewer can verify it. The
+retrieval retry also reduces the "weak context → guess" failure mode. I measured the
+limits too: a correct "not found" is only as good as retrieval, so a scanned table
+that was never OCR'd produced a confident but wrong "not found" until OCR was added.
 
 **Q: How is it multi-tenant? Could one user read another's docs?**
 No. Auth is JWT; every protected endpoint resolves the current user via an
@@ -479,11 +536,11 @@ store. I'd also persist citations/trace per query-log row so history replays are
 complete.
 
 **Q: What would you change if you did it again?**
-Reconcile the config drift (the embedding dimension and default provider differ
-between code and the env template), fix a latent eval bug where the scorer reads a
-`type` key the dataset calls `category`, make the synthesizer trace report the
-*active* model instead of a hardcoded one, and add hybrid retrieval (BM25 +
-vector) since exact keyword matches matter a lot in API docs.
+Build the evaluation set and the real-document test cases earlier (the failures that
+shaped hybrid search, OCR and the rerank threshold only showed up on real files),
+run ingestion in a background queue, store citations and traces with each query log,
+and put keyword search in Postgres full-text search instead of an in-process BM25
+index so it scales past thousands of chunks per user.
 
 ---
 
@@ -491,19 +548,31 @@ vector) since exact keyword matches matter a lot in API docs.
 
 Volunteering these shows seniority:
 
-- **Config drift**: `embedding_dim` is 512 in code but `.env.example`/comments say
-  1536; `LLM_PROVIDER` defaults to `groq` in code but `gemini` in the env template.
-- **Latent eval bug**: `score.py` reads `row["type"]` but the dataset uses
-  `category` → would `KeyError`. Its docstring also says Gemini embeddings while
-  the code uses VoyageAI.
-- **Misleading trace**: the synthesizer logs `settings.openai_model` regardless of
-  the active provider.
-- **Scaling**: no ANN index on pgvector; ingestion is synchronous in the request
-  path. Both fine for MVP, both flagged as next steps.
-- **History replay**: `query_logs` stores only question/answer, so citations and
-  trace are empty on replayed history.
-- **Retrieval**: vector-only; hybrid (BM25 + vector) would help exact-match API
-  terms.
+Fixed since this guide was first written (so don't claim them as open): config drift
+between code and `.env.example`, the `score.py` `type`/`category` KeyError, the
+synthesizer trace naming the wrong model, and vector-only retrieval (now hybrid).
+
+Still open:
+- **Eval is thin**: 4 questions, never run end to end; the VoyageAI judge-embeddings
+  wrapper in `score.py` likely needs a LangChain adapter, and its docstring still says
+  Gemini. See `docs/EVAL.md`.
+- **Scaling**: no ANN index on pgvector; ingestion (including OCR at 5 to 10 seconds
+  per scanned page) is synchronous in the request; the BM25 index is built in memory
+  per user and cached for 60 seconds.
+- **History replay**: `query_logs` stores question, answer and conversation id, but not
+  citations or traces, so replayed history lacks them.
+- **Prompt-injection defence is mitigation, not prevention**: delimiters, a data-not-
+  instructions rule and logging reduce risk; a determined attack on the model can still
+  get through.
+- **OCR limits**: reads text and rows, not table borders or merged cells, and can
+  misread characters (`II` read as `Il`).
+- **Abbreviations**: the reranker can miss a match like "AI students" vs. "AIDS";
+  abbreviation expansion or sending more than 3 chunks to the model would help.
+- **Document metadata is an LLM guess** from the first ~6000 characters and can be wrong;
+  it is skipped when there's no real text.
+- **Frontend** doesn't yet send `conversation_id` or date filters (`docs/FRONTEND.md`).
+- **Embeddings are not versioned**: nothing records which model produced a stored
+  vector, so a provider switch silently makes old vectors incomparable until re-upload.
 
 ---
 
@@ -633,7 +702,8 @@ needs hand-written references).
 - Low score = the answer-bearing chunk never got retrieved. **This is what the
   conditional retrieval retry loop targets** — widening `top_k` (8→14→20) on a weak
   pass raises recall. **Fix:** raise `top_k`, improve chunking so answers aren't
-  fragmented, add hybrid (BM25 + vector) retrieval.
+  fragmented, check hybrid (BM25 + vector) is on, and check the document was actually
+  extracted (a scan without OCR has nothing to retrieve).
 
 ### 8.3 The precision/recall tension (good thing to volunteer)
 
@@ -654,7 +724,7 @@ If asked "your eval came back like this, what do you do?":
 | **low** | high | high | high | Model hallucinates despite good context → tighten grounding prompt / try a stronger model. |
 | high | **low** | high | high | Answers wander off-question → fix synthesis prompt; check query interpreter. |
 | high | high | **low** | high | Context is noisy → rerank harder, shrink chunks, trim `RERANK_KEEP`. |
-| high | high | high | **low** | Right answer never retrieved → raise `top_k`, fix chunking, add hybrid retrieval. |
+| high | high | high | **low** | Right answer never retrieved → raise `top_k`, fix chunking, confirm hybrid retrieval is on and the source was extracted (OCR). |
 | low | low | **low** | **low** | Retrieval is the root cause → start at ingestion/embeddings before touching the LLM. |
 
 The habit this shows: **diagnose retrieval before generation.** If the context is
@@ -685,9 +755,9 @@ especially if a retry fires.
 
 ```bash
 cp .env.example .env
-# fill in: COHERE_API_KEY, GROQ_API_KEY, VOYAGEAI_API_KEY, JWT_SECRET_KEY
+# fill in: JWT_SECRET_KEY, ANTHROPIC_API_KEY, VOYAGEAI_API_KEY, COHERE_API_KEY
 docker compose up --build -d
-docker compose exec backend python -m app.db.init_db   # pgvector extension + tables (idempotent)
+docker compose exec backend python -m app.db.init_db   # extension, tables, column migrations (idempotent; re-run after every pull)
 ```
 
 Pre-flight checklist so nothing fails on camera:
@@ -753,15 +823,17 @@ Ask something the doc can't answer:
 
 ### 9.4 Trying to trigger the retry loop (the standout moment)
 
-The conditional loop fires when the top Cohere rerank score is **< 0.5** and
-attempts are **< 2**. To make it likely:
+The conditional loop fires when the top Cohere rerank score is **below the
+threshold (default 0.1)** and attempts are **< 2**. Scores for good answers often sit
+around 0.1 to 0.3, so a question has to be quite weak to trigger it. To make it
+likely (and to see the scores), keep `RERANK_DEBUG=true`:
 - Ask a **vague or tangential** question against a **small** uploaded corpus — e.g.
   upload only `tutorial_cors.md`, then ask something only loosely related like
   `"how does the framework handle browser preflight security stuff?"`.
 - In the returned `trace`, look for a **second `retrieve` entry** whose detail
   shows `top_k` widened (`retry #1, widened top_k`, `top_k=14`).
 
-> "Watch — the first rerank came back weak, under the 0.5 confidence threshold, so
+> "Watch — the first rerank came back weak, under the 0.1 confidence threshold, so
 > the router sent it back to retrieve with a wider top_k, 8 up to 14, before
 > answering. That retry is bounded to two attempts so it can't loop forever. This
 > is why I call it an agent and not a chain — it makes a routing decision based on
@@ -795,3 +867,113 @@ If the interviewer wants code after the demo, open these four in order:
 
 > "Those four files are basically the whole story — the graph, the retrieval, the
 > chunking, and how I measured it."
+
+---
+
+## 10. Recent Upgrades — Talking Points and Q&A
+
+These came from testing on real documents (a resume, a scanned college circular, a
+salary-style table), not from a feature list. Telling each as *symptom → cause → fix →
+what I verified* is a stronger interview story than the feature itself.
+
+### 10.1 The debugging stories
+
+**1. Rerank scores of 0.0 on a correct answer.**
+- *Symptom:* "What projects did Dharma work on?" returned a good answer but every
+  rerank score was `0.0`, which also triggered a pointless retry.
+- *Causes:* project chunks never contained the person's name (a resume's bullets don't
+  repeat it); the reranker was given a keyword rewrite instead of the real question; and
+  the retry threshold of 0.5 assumed Cohere scores behave like probabilities.
+- *Fixes:* rerank on the user's own question; prefix every chunk with filename plus
+  document-level metadata (subject, kind, topics, from one LLM call per upload); lower
+  the threshold to 0.1 and make it configurable; add a temporary `RERANK_DEBUG` that
+  prints the whole ranking.
+- *Evidence:* a later resume question showed scores of 0.56 / 0.34 / 0.02 instead of
+  all zeros (a different question, so directional, not a controlled comparison).
+
+**2. A wrong "not found" on a table that was in the document.**
+- *Symptom:* "Venue of project review 2 for AI students?" returned the not-found
+  message; the answer was in a table in a PDF.
+- *Diagnosis:* a SQL query for the venue text returned no rows, and every chunk of that
+  PDF held only its page number. The "table" was an image, and the only real text layer
+  on each page was the page number, which counted as content, so the upload had passed.
+- *Fixes:* local OCR (RapidOCR) for pages with no usable text layer, rebuilt into rows
+  (`Date | Description | Branch | Venue`); chunks that are only a page number are dropped
+  (an unreadable file now gets a 400); metadata extraction is skipped when there's no
+  real text, because it had been inventing a "project circular" label from the filename.
+- *Verified:* on a generated image-only PDF built like the circular, not on the real
+  file. OCR took about 9 seconds per page and read `II*` as `Il*`.
+- *Lesson:* the guardrail did its job (it declined rather than guess); the bug was
+  upstream in ingestion. Check what was *stored* before tuning prompts.
+
+**3. A silent fallback hid missing page numbers.** Citations read `unknown` even after
+the page-aware chunker shipped, because the parser quietly fell back to plain text when
+`pdfplumber` wasn't installed. It now logs a warning naming the cause and recovers per
+page instead of per file.
+
+### 10.2 What was added and why
+
+| Upgrade | Why | Trade-off |
+|---|---|---|
+| **Hybrid retrieval** (BM25 + vector, RRF) | Embeddings are weak on exact names and numbers | In-memory BM25 per user (cached 60 s); move to Postgres full-text search at scale |
+| **Page-aware PDF + tables as Markdown** | Salary/percentage tables lose meaning when columns are flattened | Merged cells and borderless tables are only partly recovered |
+| **OCR for scans** | A scanned PDF has nothing to retrieve otherwise | 5 to 10 s per page inside the upload request |
+| **Document metadata prefix** | Chunks with pronouns or no subject can't be matched or understood | One extra LLM call per upload; metadata is a guess from the first ~6000 characters |
+| **Conversation memory** | Follow-ups ("and what tech did he use?") need the previous turn | History is capped (4 turns), stored server-side and scoped by user |
+| **Boundaries and `NOT_FOUND`** | Documents are untrusted input; the model must be allowed to say no | Mitigates prompt injection, doesn't eliminate it; can over-decline |
+| **Upload-date filter** | Narrow search to documents from a period | Filters on upload date, not dates written inside documents |
+| **`LLMProvider` enum** | A typo in `LLM_PROVIDER` should fail at startup, not on the first question | Doesn't validate API keys; a wrong key still fails on first call |
+| **Console logging per node** | Nothing was visible under uvicorn except crashes | Question text appears in logs; use `LOG_LEVEL=WARNING` to quiet it |
+
+### 10.3 Likely follow-up questions
+
+**Q: How does it handle follow-up questions?**
+The client sends back the `conversation_id` from the previous response. The server loads
+the last four question/answer pairs for that conversation and that user, shows them to
+the model as real user and assistant messages, and the interpret step rewrites the new
+question into a standalone one ("What technologies did Dharma use for LoopDesk?"). That
+standalone version drives keyword search and reranking, which can't see history. History
+is server-side so a caller can't forge earlier "assistant" turns, and the prompt says
+history only resolves references and is never a source of facts.
+
+**Q: How do you defend against prompt injection from uploaded documents?**
+Layers, none perfect. Retrieved chunks, the question and history are placed inside
+`<context>`, `<question>` and conversation tags, and the system prompt says text inside
+them is data, never instructions. Text that tries to close or forge those tags is
+neutralised, questions are capped at 2000 characters, and phrases like "ignore previous
+instructions" in a question or a chunk are logged (without echoing them). The model
+still decides what to do with the text, so this reduces the risk and doesn't remove it.
+Tenant isolation doesn't depend on the model at all: every search is filtered by owner
+in code.
+
+**Q: Why hybrid search instead of just better embeddings?**
+Because the failure is structural. An embedding of "Priya's hike 8.5%" and "Rahul's hike
+7.5%" are nearly identical, so exact tokens get lost. BM25 matches the literal name or
+number. Reciprocal rank fusion merges the two rankings without needing to calibrate their
+different score scales, and the reranker then sorts the merged candidates.
+
+**Q: How do you handle scanned documents and tables?**
+Per page: if the text layer has almost no letters (page numbers don't count) or the page
+is mostly an image, run local OCR and rebuild reading-order rows; otherwise use the text
+layer and extract tables as Markdown so columns survive. Tables stay in one chunk, or
+split by rows with the header repeated. OCR is local, so no page image leaves the machine.
+Limits: no merged-cell recovery, occasional character misreads, and it's slow.
+
+**Q: Why did you change the rerank threshold from 0.5 to 0.1?**
+I assumed Cohere scores were probabilities. Logged scores showed correct answers topping
+out around 0.1 to 0.3, so 0.5 retried needlessly. The value is now a setting, and I used
+the debug output to choose it. A principled next step is to calibrate it against the eval
+set instead of by eye.
+
+**Q: What happens when two documents contradict each other?**
+The prompt tells the model not to silently pick one: say the sources disagree, give each
+value with its chunk id, and mention any date or version that could explain it. That relies
+on the model following the instruction and I haven't measured how often it does. A stronger
+design is a separate verification step that checks claims against each chunk, at the cost
+of another LLM call.
+
+**Q: How did you debug a wrong answer?**
+Follow the pipeline in order and look at what each stage actually received: the trace
+(rewritten query, candidate count, scores), the rerank debug output (which chunks reached
+Cohere and how they scored), and finally a SQL query against the stored chunks. That last
+step found the scanned-table bug: the text simply wasn't in the database.

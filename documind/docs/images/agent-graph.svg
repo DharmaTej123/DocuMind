@@ -20,12 +20,12 @@
   <!-- interpret -->
   <rect x="330" y="176" width="200" height="64" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
   <text x="430" y="201" font-size="14" font-weight="700" fill="#15803d" text-anchor="middle">interpret_query</text>
-  <text x="430" y="221" font-size="10.5" fill="#166534" text-anchor="middle">LLM rewrites raw question → keyword query</text>
+  <text x="430" y="221" font-size="10.5" fill="#166534" text-anchor="middle">rewrites question + resolves follow-ups</text>
 
   <!-- retrieve -->
   <rect x="330" y="272" width="200" height="64" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
   <text x="430" y="297" font-size="14" font-weight="700" fill="#15803d" text-anchor="middle">retrieve</text>
-  <text x="430" y="317" font-size="10.5" fill="#166534" text-anchor="middle">pgvector cosine kNN · user-scoped · top_k 8→14→20</text>
+  <text x="430" y="317" font-size="10.5" fill="#166534" text-anchor="middle">vector + BM25 · user-scoped · top_k 8→14→20</text>
 
   <!-- rerank -->
   <rect x="330" y="368" width="200" height="64" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
@@ -35,12 +35,12 @@
   <!-- route diamond -->
   <polygon points="430,460 540,510 430,560 320,510" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
   <text x="430" y="505" font-size="12" font-weight="700" fill="#b45309" text-anchor="middle">route_after_rerank</text>
-  <text x="430" y="522" font-size="10" fill="#92400e" text-anchor="middle">top score &lt; 0.5 &amp; attempts &lt; 2 ?</text>
+  <text x="430" y="522" font-size="10" fill="#92400e" text-anchor="middle">top score &lt; 0.1 &amp; attempts &lt; 2 ?</text>
 
   <!-- synthesize -->
   <rect x="590" y="478" width="230" height="64" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
   <text x="705" y="503" font-size="14" font-weight="700" fill="#15803d" text-anchor="middle">synthesize</text>
-  <text x="705" y="523" font-size="10.5" fill="#166534" text-anchor="middle">grounded answer (temp 0) + citations</text>
+  <text x="705" y="523" font-size="10.5" fill="#166534" text-anchor="middle">grounded answer or NOT_FOUND + citations</text>
 
   <!-- END -->
   <rect x="648" y="576" width="114" height="40" rx="10" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>

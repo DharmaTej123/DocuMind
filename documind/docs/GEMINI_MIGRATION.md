@@ -1,5 +1,14 @@
 # Migrating from OpenAI to Gemini
 
+> **Historical note.** This records the OpenAI → Gemini switch. Since then the default
+> provider became **Anthropic** (embeddings via VoyageAI), and `llm_provider` is a
+> `StrEnum` (`anthropic | openai | gemini | groq`) validated at startup. The embedding
+> dimension is **512**, not the 1536 discussed below, and Gemini embeddings use
+> `output_dimensionality=embedding_dim`. The OpenAI path now goes through a gateway
+> base URL, so "switching back is a one-line change" below no longer holds exactly. See
+> the "Later decisions" section of `docs/REQUIREMENTS.md`. The reasoning about embedding
+> dimensions and comparability still applies.
+
 ## Files changed
 | File | Change |
 |---|---|

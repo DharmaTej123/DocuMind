@@ -1,5 +1,24 @@
 # Evaluation — Step 7
 
+> **Status update (current code vs. the notes below)**
+> - **Fixed:** `score.py` read `row["type"]` but `collect.py` writes `category`, which
+>   would have raised `KeyError` after scoring. It now reads `category`.
+> - **Judge embeddings are VoyageAI, not Gemini.** `score.py` builds its `answer_relevancy`
+>   embeddings from `voyageai.Client` (needs `VOYAGEAI_API_KEY`, not `GEMINI_API_KEY`), and
+>   its docstring still says Gemini. The "Gemini" paragraphs below are out of date. The code
+>   passes the raw `voyageai.Client` to `LangchainEmbeddingsWrapper`, which expects a
+>   LangChain embeddings object, so that path likely needs a proper wrapper. It has not
+>   been run.
+> - **The eval set has 4 questions** (about the RAGAS study plan; `q004` is missing), not
+>   the 10 described under "Eval set". Too small for more than a regression check.
+> - **What `collect.py` exercises now:** the real graph with whatever `LLM_PROVIDER`,
+>   `VECTOR_STORE` and `HYBRID_SEARCH` are active, so record those with each run. It sends
+>   no conversation history (single-turn). Set `RERANK_DEBUG=false` for a clean console.
+> - **Score caveats:** contexts passed to RAGAS are the reranked chunks, which now start with
+>   a `[file | kind | subject | topics | section]` prefix. A question the documents can't
+>   answer now yields the "couldn't find the answer" message, which RAGAS may score low on
+>   `answer_relevancy`; that's the system declining, not a retrieval failure.
+
 ## Architecture: two phases, two venvs
 Evaluation is split into **collect** (generate answers) and **score** (grade
 them with RAGAS), run in two separate Python environments:

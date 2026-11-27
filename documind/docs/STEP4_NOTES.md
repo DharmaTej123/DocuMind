@@ -53,3 +53,11 @@ with a question — both should return real, grounded answers.
 - `QueryLog` currently stores only question/answer, not citations/trace —
   so `/query/history` replays answers but with empty citations/trace. Worth
   extending if the history view should show the full trace on replay.
+  *(Update: it now also stores `conversation_id`, used for follow-up questions. Citations
+  and traces are still not stored.)*
+
+> **Superseded details.** This file describes Step 4 as first built. Since then:
+> embeddings no longer use OpenAI (VoyageAI by default, 512 dimensions), PDF parsing moved
+> from pypdf to pdfplumber with OCR, retrieval became hybrid, and the agent gained
+> conversation memory and guardrails. See `README.md` and the decision log in
+> `docs/REQUIREMENTS.md` for the current design.
