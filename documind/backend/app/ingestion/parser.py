@@ -6,12 +6,18 @@ docs that embed code via `{* path/to/file.py *}` snippet macros get those
 macros replaced with the actual file content before chunking, so code and
 its explanation end up in the same chunk instead of being lost.
 """
+import logging
 import re
 from pathlib import Path
 from typing import Optional
 
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
+
+from app.core.config import get_settings
+from app.ingestion import ocr
+
+logger = logging.getLogger("documind.parser")
 
 SNIPPET_MACRO = re.compile(r"\{\*\s*(\.\./)*(?P<path>[^\s*]+\.py)(\s*hl\[[^\]]*\])?\s*\*\}")
 
@@ -88,6 +94,62 @@ def _table_to_markdown(rows: list[list]) -> str:
     return "\n".join(lines)
 
 
+OCR_START = "<<<OCR>>>"
+OCR_END = "<<<END_OCR>>>"
+OCR_RICH_TEXT_CHARS = 400  # a page with this many letters of real text is trusted as-is
+OCR_IMAGE_COVERAGE = 0.25  # an image covering this share of the page counts as 'mostly image'
+
+
+def _image_coverage(page) -> float:
+    """Share of the page area covered by embedded images (0.0 to ~1.0)."""
+    area = page.width * page.height
+    if not area:
+        return 0.0
+    covered = 0.0
+    for im in page.images:
+        w = min(im["x1"], page.width) - max(im["x0"], 0)
+        h = min(im["bottom"], page.height) - max(im["top"], 0)
+        covered += max(0.0, w) * max(0.0, h)
+    return covered / area
+
+
+def _ocr_reason(page, text: str, min_letters: int) -> str | None:
+    """Why this page needs OCR, or None. Page numbers alone don't count as a text layer."""
+    letters = sum(c.isalpha() for c in text)
+    if letters >= OCR_RICH_TEXT_CHARS:
+        return None
+    if letters < min_letters:
+        return "no usable text layer"
+    if _image_coverage(page) >= OCR_IMAGE_COVERAGE:
+        return "mostly an image with little text"
+    return None
+
+
+def _ocr_if_needed(page, number: int, text: str, name: str, done: list[int]) -> list[str]:
+    """OCR lines for this page, or [] when not needed, disabled, unavailable or failed."""
+    settings = get_settings()
+    reason = _ocr_reason(page, text, settings.ocr_min_text_chars)
+    if reason is None:
+        return []
+    if not settings.ocr_enabled:
+        logger.warning("page %d of %s has %s but OCR is disabled (OCR_ENABLED=false)", number, name, reason)
+        return []
+    if len(done) >= settings.ocr_max_pages:
+        logger.warning("page %d of %s skipped: OCR page limit (%d) reached", number, name, settings.ocr_max_pages)
+        return []
+    if not ocr.is_available():
+        logger.warning("page %d of %s has %s and OCR is not installed; page skipped", number, name, reason)
+        return []
+    try:
+        lines = ocr.ocr_page(page, settings.ocr_dpi, settings.ocr_min_confidence)
+    except Exception:
+        logger.warning("OCR failed on page %d of %s; page skipped", number, name, exc_info=True)
+        return []
+    logger.info("page %d of %s OCR'd (%s): %d lines", number, name, reason, len(lines))
+    done.append(number)
+    return lines
+
+
 def _parse_pdf(file_path: str) -> str:
     """
     Text PDFs with tables. pdfplumber finds tables and we render each as a
@@ -98,31 +160,61 @@ def _parse_pdf(file_path: str) -> str:
 
     Falls back to pypdf plain text if pdfplumber is unavailable or fails.
     """
+    name = Path(file_path).name
     try:
         import pdfplumber
     except ImportError:
+        logger.warning(
+            "pdfplumber is not installed: PDFs fall back to plain text with NO page numbers "
+            "or table structure (every chunk section becomes 'unknown'). "
+            "Fix: pip install pdfplumber (or re-run uv sync)."
+        )
         return _parse_pdf_plain(file_path)
 
     try:
         parts: list[str] = []
+        table_count = 0
+        ocr_pages_done: list[int] = []  # page numbers that were OCR'd
         with pdfplumber.open(file_path) as pdf:
             for number, page in enumerate(pdf.pages, start=1):
-                tables = page.find_tables()
-                text_page = page
-                for t in tables:
-                    text_page = text_page.outside_bbox(t.bbox)
-                text = (text_page.extract_text() or "").strip()
+                try:
+                    tables = page.find_tables()
+                    text_page = page
+                    for t in tables:
+                        # strict=False: a detected table box can extend slightly past the
+                        # page edge, which would otherwise raise and lose the whole file.
+                        text_page = text_page.outside_bbox(t.bbox, strict=False)
+                    text = (text_page.extract_text() or "").strip()
 
-                block = [PAGE_MARK.format(n=number)]
-                if text:
-                    block.append(text)
-                for t in tables:
-                    md = _table_to_markdown(t.extract())
-                    if md:
-                        block += [TABLE_START, md, TABLE_END]
+                    block = [PAGE_MARK.format(n=number)]
+                    if text:
+                        block.append(text)
+                    for t in tables:
+                        md = _table_to_markdown(t.extract())
+                        if md:
+                            block += [TABLE_START, md, TABLE_END]
+                            table_count += 1
+                    ocr_lines = _ocr_if_needed(page, number, text, name, ocr_pages_done)
+                    if ocr_lines:
+                        block += [OCR_START, "\n".join(ocr_lines), OCR_END]
+                except Exception:
+                    # One bad page must not drop page numbers for the whole document.
+                    logger.warning(
+                        "pdfplumber failed on page %d of %s; using plain text for that page",
+                        number, name, exc_info=True,
+                    )
+                    block = [PAGE_MARK.format(n=number), (page.extract_text() or "").strip()]
                 parts.append("\n".join(block))
+        logger.info(
+            "pdf parsed with pdfplumber | file=%s pages=%d tables=%d ocr_pages=%s",
+            name, len(parts), table_count, ocr_pages_done or "none",
+        )
         return "\n\n".join(parts)
     except Exception:
+        logger.warning(
+            "pdfplumber could not open %s; falling back to plain text (no page numbers)",
+            name, exc_info=True,
+        )
         return _parse_pdf_plain(file_path)
 
 

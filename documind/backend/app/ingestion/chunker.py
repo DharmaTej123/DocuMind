@@ -49,7 +49,8 @@ def add_context(chunks: list[Chunk], filename: str, meta: dict | None = None) ->
 
 
 PAGE_RE = re.compile(r"<<<PAGE (\d+)>>>")
-TABLE_RE = re.compile(r"<<<TABLE>>>\n(.*?)\n<<<END_TABLE>>>", re.DOTALL)
+# A structured block inside a page: a Markdown table, or OCR'd text from a scanned page.
+BLOCK_RE = re.compile(r"<<<(TABLE|OCR)>>>\n(.*?)\n<<<END_(?:TABLE|OCR)>>>", re.DOTALL)
 
 
 def chunk_text(text: str, doc_type: str) -> list[Chunk]:
@@ -72,12 +73,44 @@ def _chunk_pdf(text: str) -> list[Chunk]:
     for i in range(1, len(pieces) - 1, 2):
         page, body = pieces[i], pieces[i + 1]
         cursor = 0
-        for m in TABLE_RE.finditer(body):
-            chunks += _chunk_fixed_size(body[cursor:m.start()], section=f"p.{page}")
-            chunks += _chunk_table(m.group(1).strip(), page)
+        for m in BLOCK_RE.finditer(body):
+            chunks += _prose(body[cursor:m.start()], f"p.{page}")
+            block = m.group(2).strip()
+            chunks += _chunk_table(block, page) if m.group(1) == "TABLE" else _chunk_ocr(block, page)
             cursor = m.end()
-        chunks += _chunk_fixed_size(body[cursor:], section=f"p.{page}")
+        chunks += _prose(body[cursor:], f"p.{page}")
     return chunks
+
+
+def _prose(text: str, section: str) -> list[Chunk]:
+    """
+    Fixed-size chunks of page text, minus pieces with no letters at all: a scanned
+    page's only text layer is often just its page number ('1'), which would otherwise
+    become a meaningless chunk (and let an unreadable file pass as 'has content').
+    """
+    return [c for c in _chunk_fixed_size(text, section=section) if any(ch.isalpha() for ch in c.content)]
+
+
+def _chunk_ocr(text: str, page: str) -> list[Chunk]:
+    """
+    OCR'd page text, one line per visual row ('Date | Description | Branch | Venue').
+    Packs whole lines up to MAX_CHUNK_CHARS so a table row is never cut in half.
+    """
+    section = f"OCR p.{page}"
+    label = f"[OCR text from page {page}]\n"
+    chunks: list[Chunk] = []
+    current: list[str] = []
+    size = len(label)
+    for line in text.split("\n"):
+        line = line[: MAX_CHUNK_CHARS - len(label)]  # a single absurdly long line
+        if current and size + len(line) + 1 > MAX_CHUNK_CHARS:
+            chunks.append(Chunk(content=label + "\n".join(current), section=section))
+            current, size = [], len(label)
+        current.append(line)
+        size += len(line) + 1
+    if current:
+        chunks.append(Chunk(content=label + "\n".join(current), section=section))
+    return [c for c in chunks if any(ch.isalpha() for ch in c.content[len(label):])]
 
 
 def _chunk_table(markdown: str, page: str) -> list[Chunk]:

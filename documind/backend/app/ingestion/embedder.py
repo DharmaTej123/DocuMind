@@ -2,18 +2,18 @@
 Embedding generation for chunks before pgvector storage.
 
 Provider-switchable via settings.llm_provider, same pattern as
-core/llm_client.py. Both providers are configured to output
-settings.embedding_dim (1536) so switching providers never requires a
-pgvector schema migration:
-  - OpenAI's text-embedding-3-small is natively 1536-dim.
-  - Gemini's gemini-embedding-001 is natively 3072-dim but supports an
-    output_dimensionality param to truncate — set to 1536 to match.
+core/llm_client.py. Every provider is asked for settings.embedding_dim
+dimensions (512, matching the Vector(512) column), but vectors from different
+providers are NOT comparable: re-upload documents after switching provider.
+  - VoyageAI (groq, anthropic): output_dimension=embedding_dim.
+  - OpenAI text-embedding-3-small: `dimensions=embedding_dim`.
+  - Gemini gemini-embedding-001: output_dimensionality=embedding_dim.
 """
 import os
 os.environ.pop("REQUESTS_CA_BUNDLE", None)
 os.environ.pop("CURL_CA_BUNDLE", None)
 os.environ.pop("SSL_CERT_FILE", None)
-from app.core.config import get_settings
+from app.core.config import LLMProvider, get_settings
 import voyageai
 OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 
@@ -23,14 +23,7 @@ def embed_chunks(chunks: list[str]) -> list[list[float]]:
         return []
 
     settings = get_settings()
-    # Groq and Anthropic have no embeddings API, so both use VoyageAI.
-    if settings.llm_provider in ("groq", "anthropic"):
-        return _embed_chunks_voyageai(chunks, settings)
-    # if settings.llm_provider == "gemini":
-    #     return _embed_chunks_gemini(chunks, settings)
-    if settings.llm_provider == "openai":
-        return _embed_chunks_openai(chunks, settings)
-    raise ValueError(f"Unsupported llm_provider: {settings.llm_provider}")
+    return _EMBEDDERS[settings.llm_provider](chunks, settings)
 
 def _embed_chunks_voyageai(chunks: list[str], settings) -> list[list[float]]:
     client = voyageai.Client(api_key=settings.voyageai_api_key)
@@ -76,6 +69,20 @@ def _embed_chunks_gemini(chunks: list[str], settings) -> list[list[float]]:
         )
         vectors.append(result.embeddings[0].values)
     return vectors
+
+
+# Groq and Anthropic have no embeddings API, so both use VoyageAI. Keyed by the
+# LLMProvider enum; the check below fails at import if a provider has no embedder.
+_EMBEDDERS = {
+    LLMProvider.GROQ: _embed_chunks_voyageai,
+    LLMProvider.ANTHROPIC: _embed_chunks_voyageai,
+    LLMProvider.OPENAI: _embed_chunks_openai,
+    LLMProvider.GEMINI: _embed_chunks_gemini,
+}
+
+_missing = set(LLMProvider) - set(_EMBEDDERS)
+if _missing:
+    raise RuntimeError(f"embedder has no embedding function for provider(s): {sorted(p.value for p in _missing)}")
 
 
 def embed_query(query: str) -> list[float]:

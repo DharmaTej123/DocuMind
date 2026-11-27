@@ -56,13 +56,21 @@ def upload_document(
         doc_meta = extract_doc_metadata(text, file.filename) if get_settings().extract_doc_metadata else {}
         chunks = add_context(chunk_text(text, doc_type), file.filename, doc_meta)
         tables = sum(1 for c in chunks if (c.section or "").startswith("Table"))
+        ocr_chunks = sum(1 for c in chunks if (c.section or "").startswith("OCR"))
         logger.info(
-            "upload parsed | file=%s text_chars=%d chunks=%d table_chunks=%d",
-            file.filename, len(text), len(chunks), tables,
+            "upload parsed | file=%s text_chars=%d chunks=%d table_chunks=%d ocr_chunks=%d",
+            file.filename, len(text), len(chunks), tables, ocr_chunks,
         )
         if not chunks:
-            logger.warning("upload rejected | file=%s has no extractable text (scanned PDF?)", file.filename)
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "No extractable content in this file")
+            logger.warning(
+                "upload rejected | file=%s has no extractable text; if it is a scan, check that OCR "
+                "is installed and OCR_ENABLED is true (see the parser/ocr log lines above)",
+                file.filename,
+            )
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "No extractable text in this file. If it is a scanned PDF, OCR must be installed and enabled.",
+            )
 
         embeddings = embed_chunks([c.content for c in chunks])
         logger.info("upload embedded | file=%s vectors=%d dim=%d", file.filename, len(embeddings), len(embeddings[0]))

@@ -2,10 +2,27 @@
 Centralized app configuration, loaded from environment variables.
 Never hardcode secrets here — this file defines shape, not values.
 """
+from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class LLMProvider(StrEnum):
+    """
+    Supported LLM providers. A typo in LLM_PROVIDER now fails when settings load
+    (at app startup) instead of on the first question or upload. StrEnum, so
+    members compare equal to their string value and format as it in f-strings.
+    Every member needs an entry in llm_client._BUILDERS and embedder._EMBEDDERS
+    (tests/checked at import by those modules).
+    """
+
+    GEMINI = "gemini"
+    ANTHROPIC = "anthropic"
+    OPENAI = "openai"
+    GROQ = "groq"
 
 # Single source of truth: documind/.env, resolved from this file's location so
 # it loads no matter which directory the app or scripts are run from.
@@ -30,8 +47,14 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60 * 24  # 24h
 
-    # LLM (default provider: Gemini — see docs/REQUIREMENTS.md Decisions Log)
-    llm_provider: str = "anthropic"
+    # LLM provider. Validated against LLMProvider when settings load.
+    llm_provider: LLMProvider = LLMProvider.ANTHROPIC
+
+    @field_validator("llm_provider", mode="before")
+    @classmethod
+    def _normalise_provider(cls, value):
+        """Accept 'Anthropic' or ' openai ' from .env; reject anything else with the allowed list."""
+        return value.strip().lower() if isinstance(value, str) else value
 
     # Anthropic (Claude). Anthropic has no embeddings API, so embeddings for
     # this provider come from VoyageAI (see ingestion/embedder.py).
@@ -74,6 +97,15 @@ class Settings(BaseSettings):
     # One extra LLM call per upload to extract document-level metadata (subject,
     # kind, topics) that is added to every chunk. Falls back to filename-only on failure.
     extract_doc_metadata: bool = True
+
+    # OCR for scanned PDF pages (RapidOCR, local CPU; nothing is sent anywhere).
+    # A page is OCR'd when its text layer has fewer than ocr_min_text_chars letters,
+    # or it is mostly an image with little text. Costs seconds per page at upload.
+    ocr_enabled: bool = True
+    ocr_min_text_chars: int = 40
+    ocr_dpi: int = 200  # render resolution; lower is faster, higher reads small print better
+    ocr_min_confidence: float = 0.5  # drop detections the engine is unsure about
+    ocr_max_pages: int = 30  # per document; later pages are skipped with a warning
 
     # Conversation memory: how many earlier question/answer pairs of the same
     # conversation are shown to the model for follow-up questions. 0 disables it.

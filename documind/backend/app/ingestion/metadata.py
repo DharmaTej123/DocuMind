@@ -39,7 +39,8 @@ SYSTEM_PROMPT = (
     "Use only information present in the document. Do not guess."
 )
 
-_PAGE_MARKS = re.compile(r"<<<(?:PAGE \d+|TABLE|END_TABLE)>>>")
+_PAGE_MARKS = re.compile(r"<<<(?:PAGE \d+|TABLE|END_TABLE|OCR|END_OCR)>>>")
+MIN_LETTERS_FOR_METADATA = 30
 _PREFIX_UNSAFE = re.compile(r"[\[\]|\n\r\t]")
 
 
@@ -72,7 +73,10 @@ def parse_metadata(raw: str) -> dict:
 def extract_doc_metadata(text: str, filename: str) -> dict:
     """One LLM call over the start of the document. Never raises; {} on any failure."""
     excerpt = _PAGE_MARKS.sub("", text)[:MAX_INPUT_CHARS].strip()
-    if not excerpt:
+    if sum(c.isalpha() for c in excerpt) < MIN_LETTERS_FOR_METADATA:
+        # Nothing real to read (e.g. a scan with only page numbers). Asking anyway
+        # makes the model guess the subject from the filename alone.
+        logger.info("metadata skipped for %s: too little text to label", filename)
         return {}
     try:
         result = get_llm().invoke(

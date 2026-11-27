@@ -10,7 +10,7 @@ import logging
 import sys
 
 NOISY_LOGGERS = (
-    "httpx", "httpcore", "urllib3", "hpack", "chromadb", "opentelemetry",
+    "httpx", "httpcore", "urllib3", "hpack", "chromadb", "opentelemetry", "RapidOCR",
     "posthog", "multipart", "pdfminer", "pdfplumber", "PIL",
 )
 
